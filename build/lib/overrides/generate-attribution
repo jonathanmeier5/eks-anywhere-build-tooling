@@ -1,0 +1,93 @@
+  #!/usr/bin/env bash
+# Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/" && pwd -P)"
+
+CONTAINER_IMAGE="public.ecr.aws/k1e6s8o8/generate-attribution:2022-09-11-1662925457"
+
+ROOT_MODULE_NAME="$1"
+PROJECT_ROOT="$2"
+GOLANG_VERSION_TAG="$3"
+OUTPUT_DIR="$4"
+
+USE_DOCKER=$(cat $SCRIPT_ROOT/.usedocker)
+
+if [[ "$USE_DOCKER" = "true" ]] ; then
+    docker run \
+        --mount type=bind,source="$PROJECT_ROOT",target=/project \
+        --entrypoint node $CONTAINER_IMAGE --dns-result-order=ipv4first generate-attribution-file.js $ROOT_MODULE_NAME /project $GOLANG_VERSION_TAG /project/_output
+
+    exit $?
+fi
+
+echo "generate-attribution not available and docker not running!"
+exit 1
+
+# ******************************* WIP **************************************
+
+echo "generate-attribution script not found, falling back to buildctl to generate ATTRIBUTION"
+
+dockerfile_dir=$(mktemp -d)
+trap "rm -rf $dockerfile_dir" EXIT
+
+cat << 'EOF' > $dockerfile_dir/Dockerfile
+    ARG IMAGE
+    FROM $IMAGE AS run
+    ARG PROJECT_ROOT
+    ARG OUTPUT_DIRECTORY
+    ARG ROOT_MODULE_NAME
+    ARG GOLANG_VERSION_TAG
+
+    RUN --mount=type=bind,source=$PROJECT_ROOT,target=/project \
+    --mount=type=bind,source=$OUTPUT_DIRECTORY,target=/output \
+    node generate-attribution-file.js "${ROOT_MODULE_NAME}" "/project" "${GOLANG_VERSION_TAG}" "/output" "/attribution-output"
+
+    FROM scratch
+    COPY --from=run /attribution-output/* .
+EOF
+
+cat << EOF > $dockerfile_dir/Dockerfile.dockerignore
+*
+!**/GIT_TAG
+!**/LICENSES/**/*
+!**/attribution/*
+EOF
+
+relative_project_root=$(realpath --relative-to=$(realpath .) $project_root)
+relative_output_dir=$(realpath --relative-to=$(realpath .) $output_directory)
+
+if [ "${JOB_TYPE:-}" == "presubmit" ]; then
+    rm -rf /root/.cache/go-build
+fi
+$BUILD_ROOT/buildkit.sh build \
+    --frontend dockerfile.v0 \
+    --local dockerfile=$dockerfile_dir \
+    --local context=. \
+    --progress plain \
+    --opt build-arg:IMAGE=$attribution_image \
+    --opt build-arg:ROOT_MODULE_NAME=$root_module_name \
+    --opt build-arg:GOLANG_VERSION_TAG=$golang_version_tag \
+    --opt build-arg:PROJECT_ROOT=$relative_project_root \
+    --opt build-arg:OUTPUT_DIRECTORY=$relative_output_dir \
+    --output type=local,dest=$output_directory/attribution
+    
+    if [ "${JOB_TYPE:-}" == "presubmit" ]; then
+    $BUILD_ROOT/buildkit.sh prune --all
+    fi
