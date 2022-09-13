@@ -237,6 +237,7 @@ function build::common::get_go_path() {
 }
 
 USE_DOCKER="${USE_DOCKER:-false}"
+USE_BUILDCTL="${USE_BUILDCTL:-false}"
 
 function build::common::use_go_version() {
   local -r version=$1
@@ -259,20 +260,21 @@ function build::common::use_go_version() {
   if [[ "$USE_DOCKER" = "false" ]]; then
     local gobinarypath=$(build::common::get_go_path $version)
   elif [[ ! -f $overrides_root/.goversion ]] || [[ "$(cat $overrides_root/.goversion)" != "${version}" ]]; then
-    echo "Using docker container for golang version"
-
     mkdir -p $gobinarypath
     ln -sf $BUILD_ROOT/overrides/* $gobinarypath
     echo "$version" > $gobinarypath/.goversion
 
-    if command -v docker &> /dev/null && docker info > /dev/null 2>&1 ; then
+    if [[ "$USE_BUILDCTL" = "false" ]] && command -v docker &> /dev/null && docker info > /dev/null 2>&1 ; then
+      echo "Using container image for golang $version via docker"
       build::docker::retry_pull public.ecr.aws/k1e6s8o8/generate-attribution:2022-09-11-1662925457
       build::docker::retry_pull public.ecr.aws/k1e6s8o8/eks-distro-minimal-base-golang:${version}-foo.2
       build::docker::retry_pull public.ecr.aws/k1e6s8o8/go-licenses:${version}-latest
 
       echo "true" > $gobinarypath/.usedocker
+    else
+      echo "Using container image for golang $version via buildctl"
+      echo "false" > $gobinarypath/.usedocker
     fi
-
   fi
 
   export GOCACHE="${project_root}/_output/.go-cache/build/$version"

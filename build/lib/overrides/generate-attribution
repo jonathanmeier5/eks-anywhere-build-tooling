@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 set -o errexit
 set -o nounset
 set -o pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/" && pwd -P)"
+RELATIVE_SCRIPT_ROOT="$(cd "$(dirname $(realpath "${BASH_SOURCE[0]}"))/" && pwd -P)"
 
 CONTAINER_IMAGE="public.ecr.aws/k1e6s8o8/generate-attribution:2022-09-11-1662925457"
 
@@ -37,57 +37,34 @@ if [[ "$USE_DOCKER" = "true" ]] ; then
     exit $?
 fi
 
-echo "generate-attribution not available and docker not running!"
-exit 1
+DOCKERFILE_DIR=$(mktemp -d)
+trap "rm -rf $DOCKERFILE_DIR" EXIT
 
-# ******************************* WIP **************************************
+cat << EOF > $DOCKERFILE_DIR/Dockerfile
+FROM $CONTAINER_IMAGE AS run
 
-echo "generate-attribution script not found, falling back to buildctl to generate ATTRIBUTION"
+WORKDIR /project
 
-dockerfile_dir=$(mktemp -d)
-trap "rm -rf $dockerfile_dir" EXIT
+RUN --mount=type=bind,source=./,target=/project \
+    node --dns-result-order=ipv4first /usr/src/app/generate-attribution-file.js "${ROOT_MODULE_NAME}" "/project" "${GOLANG_VERSION_TAG}" "/project/_output" "/attribution-output"
 
-cat << 'EOF' > $dockerfile_dir/Dockerfile
-    ARG IMAGE
-    FROM $IMAGE AS run
-    ARG PROJECT_ROOT
-    ARG OUTPUT_DIRECTORY
-    ARG ROOT_MODULE_NAME
-    ARG GOLANG_VERSION_TAG
+FROM scratch as save
+COPY --from=run /attribution-output/* .
 
-    RUN --mount=type=bind,source=$PROJECT_ROOT,target=/project \
-    --mount=type=bind,source=$OUTPUT_DIRECTORY,target=/output \
-    node generate-attribution-file.js "${ROOT_MODULE_NAME}" "/project" "${GOLANG_VERSION_TAG}" "/output" "/attribution-output"
-
-    FROM scratch
-    COPY --from=run /attribution-output/* .
 EOF
 
-cat << EOF > $dockerfile_dir/Dockerfile.dockerignore
+cat << EOF > $DOCKERFILE_DIR/Dockerfile.dockerignore
 *
 !**/GIT_TAG
 !**/LICENSES/**/*
 !**/attribution/*
 EOF
 
-relative_project_root=$(realpath --relative-to=$(realpath .) $project_root)
-relative_output_dir=$(realpath --relative-to=$(realpath .) $output_directory)
-
-if [ "${JOB_TYPE:-}" == "presubmit" ]; then
-    rm -rf /root/.cache/go-build
-fi
-$BUILD_ROOT/buildkit.sh build \
+$RELATIVE_SCRIPT_ROOT/../buildkit.sh  build \
     --frontend dockerfile.v0 \
-    --local dockerfile=$dockerfile_dir \
-    --local context=. \
+    --local dockerfile=$DOCKERFILE_DIR \
+    --local context=$PROJECT_ROOT \
     --progress plain \
-    --opt build-arg:IMAGE=$attribution_image \
-    --opt build-arg:ROOT_MODULE_NAME=$root_module_name \
-    --opt build-arg:GOLANG_VERSION_TAG=$golang_version_tag \
-    --opt build-arg:PROJECT_ROOT=$relative_project_root \
-    --opt build-arg:OUTPUT_DIRECTORY=$relative_output_dir \
-    --output type=local,dest=$output_directory/attribution
+    --opt target=save \
+    --output type=local,dest=$OUTPUT_DIR/attribution &> /dev/null
     
-    if [ "${JOB_TYPE:-}" == "presubmit" ]; then
-    $BUILD_ROOT/buildkit.sh prune --all
-    fi

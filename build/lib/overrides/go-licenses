@@ -18,6 +18,7 @@ set -o nounset
 set -o pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/" && pwd -P)"
+RELATIVE_SCRIPT_ROOT="$(cd "$(dirname $(realpath "${BASH_SOURCE[0]}"))/" && pwd -P)"
 
 PROJECT_MOUNT=$(realpath .)
 GOLANG_VERSION=$(cat $SCRIPT_ROOT/.goversion)
@@ -52,6 +53,79 @@ if [[ "$USE_DOCKER" = "true" ]] ; then
     exit $?
 fi
 
-echo "go-licenses not available and docker not running!"
-exit 1
+# ******************************* WIP **************************************
+longest_common_prefix()
+{
+    declare -a names
+    declare -a parts
+    declare i=0
 
+    names=("$@")
+    name="$1"
+    while x=$(dirname "$name"); [ "$x" != "/" ]
+    do
+        parts[$i]="$x"
+        i=$(($i + 1))
+        name="$x"
+    done
+
+    for prefix in "${parts[@]}" /
+    do
+        for name in "${names[@]}"
+        do
+            if [ "${name#$prefix/}" = "${name}" ]
+            then continue 2
+            fi
+        done
+        echo "$prefix"
+        break
+    done
+}
+
+DOCKERFILE_DIR=$(mktemp -d)
+trap "rm -rf $DOCKERFILE_DIR" EXIT
+
+OUTPUT_MOUNT=${OUTPUT_MOUNT:-$PROJECT_MOUNT}
+
+CONTEXT=$(longest_common_prefix $PROJECT_MOUNT $OUTPUT_MOUNT)
+RELATIVE_PROJECT_MOUNT=$(realpath --relative-to=$CONTEXT $PROJECT_MOUNT)
+RELATIVE_OUTPUT_MOUNT=$(realpath --relative-to=$CONTEXT $OUTPUT_MOUNT)
+
+
+if [[ "${ARGS[0]}" = "save" ]]; then
+    TARGET="save"
+elif [[ "${ARGS[0]}" = "csv" ]]; then
+    TARGET="csv"
+else
+    echo "unexpected go subcommand: ${ARGS[@]}"
+    exit 1
+fi
+
+cat << EOF > $DOCKERFILE_DIR/Dockerfile
+FROM $CONTAINER_IMAGE AS run
+
+WORKDIR /project
+RUN --mount=type=bind,source=$RELATIVE_PROJECT_MOUNT,target=/project \
+    go-licenses ${ARGS[@]} > /build-output.stdout 2> /build-output.stderr
+
+FROM scratch as csv
+COPY --from=run /build-output.stdout /build-output.stderr ./
+
+FROM scratch as save
+COPY --from=run /output/* $RELATIVE_OUTPUT_MOUNT/
+COPY --from=run /build-output.stdout /build-output.stderr ./
+
+EOF
+
+$RELATIVE_SCRIPT_ROOT/../buildkit.sh build \
+    --frontend dockerfile.v0 \
+    --local dockerfile=$DOCKERFILE_DIR \
+    --local context=$CONTEXT \
+    --progress plain \
+    --opt target=$TARGET \
+    --output type=local,dest=$CONTEXT &> /dev/null
+
+cat $CONTEXT/build-output.stdout
+>&2 cat $CONTEXT/build-output.stderr
+
+rm $CONTEXT/build-output.stdout $CONTEXT/build-output.stderr
