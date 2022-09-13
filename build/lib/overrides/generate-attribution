@@ -60,11 +60,16 @@ cat << EOF > $DOCKERFILE_DIR/Dockerfile.dockerignore
 !**/attribution/*
 EOF
 
-$RELATIVE_SCRIPT_ROOT/../buildkit.sh  build \
+LOG_FILE=$(mktemp)
+trap "rm -f $LOG_FILE" EXIT
+if ! $RELATIVE_SCRIPT_ROOT/../buildkit.sh  build \
     --frontend dockerfile.v0 \
     --local dockerfile=$DOCKERFILE_DIR \
     --local context=$PROJECT_ROOT \
     --progress plain \
     --opt target=save \
-    --output type=local,dest=$OUTPUT_DIR/attribution &> /dev/null
+    --output type=local,dest=$OUTPUT_DIR/attribution 2>&1 > $LOG_FILE; then
     
+    cat $LOG_FILE
+    exit 1
+fi        
