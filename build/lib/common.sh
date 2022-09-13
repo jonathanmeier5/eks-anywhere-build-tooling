@@ -236,8 +236,8 @@ function build::common::get_go_path() {
   fi
 }
 
-USE_DOCKER="${USE_DOCKER:-false}"
-USE_BUILDCTL="${USE_BUILDCTL:-false}"
+USE_DOCKER="${USE_DOCKER:-true}"
+USE_BUILDCTL="${USE_BUILDCTL:-true}"
 
 function build::common::use_go_version() {
   local -r version=$1
